@@ -6,8 +6,8 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
 
-const CENTER_X = 2000;
-const CENTER_Y = 2000; 
+const CENTER_X = 3000;
+const CENTER_Y = 3000; 
 
 
 const PORT = process.env.PORT || 3000;
@@ -15,13 +15,12 @@ const PORT = process.env.PORT || 3000;
 app.use(express.static(__dirname)); // Sirve index.html y game.js
 
 let players = {};
-
 let lobbyTimer = null;
 let lobbyTimeLeft = 0;
 let lobbyStarted = false;
 let gameStarted = false;
 let gameStartTime = null; 
-
+let spectators = {};
 
 
 let initialOrbs = [];
@@ -100,7 +99,50 @@ function startLobbyCountdown() {
       }
     }
   }, 1000);
-}   
+} 
+
+function checkGameEnd() {
+  if (!gameStarted) return;
+  
+  const alivePlayers = Object.values(players).filter(p => !p.dead && p.health > 0);
+  
+  if (alivePlayers.length <= 1) {
+    // El juego ha terminado, crear ranking
+    const allPlayers = Object.values(players);
+    
+    // Ordena por kills y salud para el ranking
+    const ranking = allPlayers.sort((a, b) => {
+      if (b.kills !== a.kills) return b.kills - a.kills;
+      return b.health - a.health;
+    }).map((player, index) => ({
+      name: player.name || "Jugador",
+      position: index + 1,
+      kills: player.kills || 0,
+      alive: !player.dead && player.health > 0
+    }));
+    
+    // Envía el ranking final a todos los clientes (jugadores y espectadores)
+    io.emit('gameEnd', ranking);
+    
+    console.log('Juego terminado. Ranking:', ranking);
+    
+    // Resetea el juego después de un tiempo
+    setTimeout(() => {
+      gameStarted = false;
+      gameStartTime = null;
+      players = {};
+      spectators = {};
+      orbs = [];
+      specialItems = [];
+      console.log('Juego reseteado');
+    }, 10000); // 10 segundos para ver el ranking
+  }
+}
+
+function notifyPlayerKilled(killerId, victimId) {
+  io.emit('playerKilled', { killerId, victimId });
+}
+
 io.on('connection', (socket) => {
     console.log('Nuevo jugador conectado:', socket.id);
 
@@ -187,29 +229,63 @@ socket.on('update', (data) => {
   io.emit('syncPlayers', players);
 });
 
-  socket.on('disconnect', () => {
-    console.log('Jugador desconectado:', socket.id);
-    delete players[socket.id];
-    io.emit('playerLeft', socket.id);
+socket.on('spectatorMode', (data) => {
+  if (data.active) {
+    spectators[socket.id] = { target: data.target };
+    console.log(`Jugador ${socket.id} entró en modo espectador siguiendo a ${data.target}`);
+  } else {
+    delete spectators[socket.id];
+    console.log(`Jugador ${socket.id} salió del modo espectador`);
+  }
+});
 
-    // Si no hay jugadores, resetea el lobby y la partida
-    if (Object.keys(players).length === 0) {
-      if (lobbyTimer) clearInterval(lobbyTimer);
-      lobbyTimer = null;
-      lobbyStarted = false;
-      gameStarted = false;
+socket.on('playerDied', (data) => {
+  if (players[socket.id]) {
+    players[socket.id].dead = true;
+    players[socket.id].health = 0;
+    
+    if (data.killedBy) {
+      notifyPlayerKilled(data.killedBy, socket.id);
     }
-  });
+    
+    checkGameEnd();
+  }
+});
 
-  socket.on('orbCollected', (orbId) => {
+socket.on('disconnect', () => {
+  console.log('Jugador desconectado:', socket.id);
+  
+  // Elimina del modo espectador si estaba
+  delete spectators[socket.id];
+  
+  // Guarda información del jugador antes de eliminarlo (para el ranking)
+  const disconnectedPlayer = players[socket.id];
+  
+  delete players[socket.id];
+  io.emit('playerLeft', socket.id);
+
+  // Si no hay jugadores, resetea el lobby y la partida
+  if (Object.keys(players).length === 0) {
+    if (lobbyTimer) clearInterval(lobbyTimer);
+    lobbyTimer = null;
+    lobbyStarted = false;
+    gameStarted = false;
+    spectators = {}; // Limpia espectadores
+  }
+  
+  // Verifica si el juego debe terminar (solo queda 1 jugador vivo)
+  checkGameEnd();
+});
+
+socket.on('orbCollected', (orbId) => {
     orbs = orbs.filter(o => o.id !== orbId);
     io.emit('removeOrb', orbId);
-  });
+});
 
-  socket.on('specialItemCollected', (itemId) => {
+socket.on('specialItemCollected', (itemId) => {
     specialItems = specialItems.filter(i => i.id !== itemId);
     io.emit('removeSpecialItem', itemId);
-  });
+});
 });
 
 server.listen(PORT, '0.0.0.0', () => {
@@ -217,13 +293,68 @@ server.listen(PORT, '0.0.0.0', () => {
 });
 
 setInterval(() => {
-  if (Object.keys(players).length >= 2) {
-    spawnOrb();
+  if (gameStarted && Object.keys(players).length >= 2) {
+    const elapsed = (Date.now() - gameStartTime) / 1000;
+    const battleTimer = Math.max(0, 300 - elapsed);
+    const maxRadius = Math.hypot(CENTER_X, CENTER_Y);
+    const currentSafeRadius = maxRadius * (battleTimer / 300);
+
+    if (orbs.length < 160) {
+      let tries = 0;
+      while (tries < 10) {
+        const angle = Math.random() * 2 * Math.PI;
+        const r = Math.random() * (currentSafeRadius - 100);
+        const x = CENTER_X + Math.cos(angle) * r;
+        const y = CENTER_Y + Math.sin(angle) * r;
+        if (x > 5 && x < CENTER_X * 2 - 5 && y > 5 && y < CENTER_Y * 2 - 5) {
+          const orb = {
+            id: 'orb' + Date.now() + Math.random(),
+            x, y,
+            radius: 3 + Math.random() * 2
+          };
+          orbs.push(orb);
+          io.emit('newOrb', orb);
+          break;
+        }
+        tries++;
+      }
+    }
   }
-}, 1500);
+}, 900);
 
 setInterval(() => {
-  if (Object.keys(players).length >= 2) {
-    spawnSpecialItem();
+  if (gameStarted && Object.keys(players).length >= 2) {
+    const elapsed = (Date.now() - gameStartTime) / 1000;
+    const battleTimer = Math.max(0, 300 - elapsed);
+    const maxRadius = Math.hypot(CENTER_X, CENTER_Y);
+    const currentSafeRadius = maxRadius * (battleTimer / 300);
+
+    if (specialItems.length < 8) {
+      let tries = 0;
+      while (tries < 10) {
+        const angle = Math.random() * 2 * Math.PI;
+        const r = Math.random() * (currentSafeRadius - 100);
+        const x = CENTER_X + Math.cos(angle) * r;
+        const y = CENTER_Y + Math.sin(angle) * r;
+        if (x > 7 && x < CENTER_X * 2 - 7 && y > 7 && y < CENTER_Y * 2 - 7) {
+          const item = {
+            id: 'item' + Date.now() + Math.random(),
+            type: ["freeze", "hook", "missile", "repulse", "shield"][Math.floor(Math.random() * 5)],
+            x, y,
+            radius: 7
+          };
+          specialItems.push(item);
+          io.emit('newSpecialItem', item);
+          break;
+        }
+        tries++;
+      }
+    }
   }
-}, 10000);
+}, 6000);
+
+setInterval(() => {
+  if (gameStarted) {
+    checkGameEnd();
+  }
+}, 2000); 

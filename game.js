@@ -26,6 +26,11 @@ let gameStartTime = null;
 let battleTimer = 300; // 5 minutos en segundos
 let safeZoneDamage = 0;
 
+let isSpectatorMode = false;
+let spectatorTarget = null;
+let killerPlayerId = null;
+let gameEndRanking = null;
+
 let missiles = [];
 
 let timeSinceLastGrowth = 0;
@@ -40,11 +45,11 @@ let deathPosition = null;
 let showDeathOverlay = false;
 
 let orbs = [];
-const ORB_COUNT_MAX = 40;
+const ORB_COUNT_MAX = 80;
 const ORB_RADIUS = 5;
 
-const worldWidth = 4000;
-const worldHeight = 4000;
+const worldWidth = 6000;
+const worldHeight = 6000;
 
 let currentSafeRadius = Math.hypot(worldWidth / 2, worldHeight / 2);
 function launchMissile(p) {
@@ -90,13 +95,36 @@ function createInitialOrbs() {
 }
 
 function spawnOrb() {
-  if (orbs.length >= 150) return; // Límite mayor: más orbes
-  const x = Math.random() * (worldWidth - 200) + 100;
-  const y = Math.random() * (worldHeight - 200) + 100;
-  const radius = 3 + Math.random() * 2;
-  orbs.push({ x, y, radius });
+  if (orbs.length >= ORB_COUNT_MAX) return;
+  let tries = 0;
+  while (tries < 20) {
+    const angle = Math.random() * 2 * Math.PI;
+    const r = Math.random() * (currentSafeRadius - 100);
+    const x = worldWidth / 2 + Math.cos(angle) * r;
+    const y = worldHeight / 2 + Math.sin(angle) * r;
+    if (x > ORB_RADIUS && x < worldWidth - ORB_RADIUS && y > ORB_RADIUS && y < worldHeight - ORB_RADIUS) {
+      orbs.push({ x, y, radius: ORB_RADIUS });
+      break;
+    }
+    tries++;
+  }
 }
 
+function spawnSpecialItem() {
+  if (specialItems.length >= 8) return; // más objetos simultáneos
+  let tries = 0;
+  while (tries < 20) {
+    const angle = Math.random() * 2 * Math.PI;
+    const r = Math.random() * (currentSafeRadius - 100);
+    const x = worldWidth / 2 + Math.cos(angle) * r;
+    const y = worldHeight / 2 + Math.sin(angle) * r;
+    if (x > SPECIAL_ITEM_RADIUS && x < worldWidth - SPECIAL_ITEM_RADIUS && y > SPECIAL_ITEM_RADIUS && y < worldHeight - SPECIAL_ITEM_RADIUS) {
+      specialItems.push({ x, y, type: SPECIAL_ITEM_TYPES[Math.floor(Math.random() * SPECIAL_ITEM_TYPES.length)], radius: SPECIAL_ITEM_RADIUS });
+      break;
+    }
+    tries++;
+  }
+}
 // Parámetros para fuerzas
 const MIN_SPEED = 0.5;
 const MAX_SPEED = 4;
@@ -154,7 +182,7 @@ let player = {
   hitTimer: 0
 };
 
-const BOT_COUNT = 3;
+const BOT_COUNT = 9;
 
 let bots = [];
 function createBots() {
@@ -281,8 +309,30 @@ function updateMissiles(dt) {
   }
 }
 function updatePlayerMovement(deltaTime) {
+  if (isSpectatorMode) {
+    // En modo espectador, seguir al target
+    if (spectatorTarget && otherPlayers[spectatorTarget]) {
+      const target = otherPlayers[spectatorTarget];
+      if (target.dead || target.health <= 0) {
+        // El target murió, cambiar a otro jugador vivo
+        const alivePlayers = Object.values(otherPlayers).filter(p => !p.dead && p.health > 0);
+        if (alivePlayers.length > 0) {
+          spectatorTarget = alivePlayers[Math.floor(Math.random() * alivePlayers.length)].id;
+        } else {
+          spectatorTarget = null;
+        }
+      } else {
+        // Seguir al target
+        player.x = target.x;
+        player.y = target.y;
+      }
+    }
+    return;
+  }
+
   if (player.dead || player.health <= 0) return; 
   if (player.frozenUntil && player.frozenUntil > Date.now()) return;
+  
   let totalForce = { x: 0, y: 0 };
 
   let others = isOnline ? Object.values(otherPlayers) : bots;
@@ -306,7 +356,6 @@ function updatePlayerMovement(deltaTime) {
     }
   });
 
-  // Movimiento hacia el puntero del ratón (como Agar.io)
   let centerX = canvas.width / 2;
   let centerY = canvas.height / 2;
   let dx, dy;
@@ -325,21 +374,17 @@ function updatePlayerMovement(deltaTime) {
     let directionX = dx / distance;
     let directionY = dy / distance;
     let currentSpeed = speedBySize(player.radius, player.fieldRadius);
-    // Suma la fuerza de movimiento a la fuerza total
     totalForce.x += directionX * currentSpeed;
     totalForce.y += directionY * currentSpeed;
   }
 
-  // Suavizado
   const smoothing = 0.15;
   player.velocity.x += (totalForce.x - player.velocity.x) * smoothing;
   player.velocity.y += (totalForce.y - player.velocity.y) * smoothing;
 
-  // Actualiza posición
   player.x += player.velocity.x * deltaTime * 0.06;
   player.y += player.velocity.y * deltaTime * 0.06;
 
-  // Limita dentro del mundo
   player.x = Math.max(player.radius, Math.min(worldWidth - player.radius, player.x));
   player.y = Math.max(player.radius, Math.min(worldHeight - player.radius, player.y));
 }
@@ -1123,7 +1168,7 @@ if (battleTimer > 0) {
 }
 
 function drawMiniMap() {
-  const w = 110, h = 110, pad = 18;
+  const w = 160, h = 160, pad = 18;
   const mapX = canvas.width - w - pad;
   const mapY = canvas.height - h - pad;
 
@@ -1384,14 +1429,14 @@ function drawDeathOverlay() {
   ctx.fillStyle = "white";
   ctx.textAlign = "center";
 
-if (window._endType === "victory") {
-  ctx.font = "bold 54px Arial";
-  ctx.fillStyle = "#00ff44"; // Verde brillante
-  ctx.fillText("¡VICTORIA!", canvas.width / 2, canvas.height / 2 - 80);
-  ctx.fillStyle = "white";
-  ctx.font = "32px Arial";
-  ctx.fillText("¡HAS QUEDADO EN LA POSICIÓN #1!", canvas.width / 2, canvas.height / 2 - 20);
-} else {
+  if (window._endType === "victory") {
+    ctx.font = "bold 54px Arial";
+    ctx.fillStyle = "#00ff44";
+    ctx.fillText("¡VICTORIA!", canvas.width / 2, canvas.height / 2 - 80);
+    ctx.fillStyle = "white";
+    ctx.font = "32px Arial";
+    ctx.fillText("¡HAS QUEDADO EN LA POSICIÓN #1!", canvas.width / 2, canvas.height / 2 - 20);
+  } else {
     ctx.font = "bold 48px Arial";
     ctx.fillText("¡Has muerto!", canvas.width / 2, canvas.height / 2 - 80);
     ctx.font = "32px Arial";
@@ -1402,18 +1447,30 @@ if (window._endType === "victory") {
     );
   }
 
+  // Botones
+  const buttonY = canvas.height / 2 + 40;
+  const buttonHeight = 50;
+  
   // Botón: Jugar de nuevo
   ctx.fillStyle = "#33cc33";
-  ctx.fillRect(canvas.width / 2 - 160, canvas.height / 2 + 40, 140, 50);
+  ctx.fillRect(canvas.width / 2 - 180, buttonY, 140, buttonHeight);
   ctx.fillStyle = "#fff";
-  ctx.font = "20px Arial";
-  ctx.fillText("Jugar de nuevo", canvas.width / 2 - 90, canvas.height / 2 + 72);
+  ctx.font = "18px Arial";
+  ctx.fillText("Jugar de nuevo", canvas.width / 2 - 110, buttonY + 32);
 
-  // Botón: Volver al menú
+  // Botón: Volver al menú  
   ctx.fillStyle = "#cc3333";
-  ctx.fillRect(canvas.width / 2 + 20, canvas.height / 2 + 40, 140, 50);
+  ctx.fillRect(canvas.width / 2 + 40, buttonY, 140, buttonHeight);
   ctx.fillStyle = "#fff";
-  ctx.fillText("Volver al menú", canvas.width / 2 + 90, canvas.height / 2 + 72);
+  ctx.fillText("Volver al menú", canvas.width / 2 + 110, buttonY + 32);
+  
+  // Botón: Modo espectador (solo si es online y posición != 2)
+  if (isOnline && window._endPosition !== 2 && window._endType !== "victory") {
+    ctx.fillStyle = "#6666cc";
+    ctx.fillRect(canvas.width / 2 - 70, buttonY + 70, 140, buttonHeight);
+    ctx.fillStyle = "#fff";
+    ctx.fillText("Modo espectador", canvas.width / 2, buttonY + 102);
+  }
 
   ctx.restore();
 }
@@ -1431,6 +1488,18 @@ const extraOptions = [
 ];
 let totalMenuOptions = menuOptions.length + extraOptions.length;
 
+
+document.addEventListener('keydown', function(e) {
+  if (!isSpectatorMode) return;
+  
+  if (e.key === ' ') {
+    // Cambiar jugador seguido
+    switchSpectatorTarget();
+  } else if (e.key === 'Enter' && gameEndRanking) {
+    // Mostrar ranking final
+    // Ya se muestra automáticamente si gameEndRanking existe
+  }
+});
 
 canvas.addEventListener("touchstart", function (e) {
   if (gameMode !== null) return;
@@ -1730,7 +1799,7 @@ if (showDeathOverlay) {
 
 let lastTime = 0;
 let orbSpawnTimer = 0;
-const ORB_SPAWN_INTERVAL = 1500;
+const ORB_SPAWN_INTERVAL = 900;
 
 function resetOnlineMode(orbsFromServer, startTimeFromServer, specialItemsFromServer) {
   deathPosition = null;
@@ -2026,13 +2095,27 @@ socket.on('syncPlayers', (playersObj) => {
     }
   }
 });
+
+socket.on('gameEnd', (ranking) => {
+  gameEndRanking = ranking;
+  isSpectatorMode = false;
+  spectatorTarget = null;
+  showDeathOverlay = false;
+});
+
+socket.on('playerKilled', ({ killerId, victimId }) => {
+  if (victimId === playerId) {
+    killerPlayerId = killerId;
+  }
+});
+
 }
 
 // --- OBJETOS ESPECIALES (Completos) ---
 const SPECIAL_ITEM_TYPES = ["freeze", "hook", "missile", "repulse", "shield"];
 let specialItems = [];
 const SPECIAL_ITEM_RADIUS = 7;
-const SPECIAL_ITEM_RESPAWN_INTERVAL = 10000;
+const SPECIAL_ITEM_RESPAWN_INTERVAL = 6000;
 let lastSpecialItemSpawn = 0;
 
 // Asignar item al jugador/bot si aún no tiene
@@ -2168,14 +2251,6 @@ function applyHook(p) {
     }
     nearest.hitTimer = 10;
   }
-}
-
-function spawnSpecialItem() {
-  if (specialItems.length >= 5) return;
-  const type = SPECIAL_ITEM_TYPES[Math.floor(Math.random() * SPECIAL_ITEM_TYPES.length)];
-  const x = Math.random() * (worldWidth - 2 * SPECIAL_ITEM_RADIUS) + SPECIAL_ITEM_RADIUS;
-  const y = Math.random() * (worldHeight - 2 * SPECIAL_ITEM_RADIUS) + SPECIAL_ITEM_RADIUS;
-  specialItems.push({ x, y, type, radius: SPECIAL_ITEM_RADIUS });
 }
 
 // --- NUEVO: Dibuja iconos de special items con emojis y coherencia ---
@@ -2442,102 +2517,162 @@ function updateBotSpecialItem(bot) {
 }
 
 canvas.addEventListener('click', e => {
-if (!showDeathOverlay) return;
+  // Click en ranking final
+  if (gameEndRanking) {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    // Botón volver al menú en ranking
+    if (x > canvas.width / 2 - 100 && x < canvas.width / 2 + 100 && 
+        y > canvas.height - 120 && y < canvas.height - 70) {
+      gameEndRanking = null;
+      isSpectatorMode = false;
+      spectatorTarget = null;
+      gameMode = null;
+      if (socket) {
+        socket.disconnect();
+        socket = null;
+        isOnline = false;
+        playerId = null;
+        otherPlayers = {};
+        waitingForPlayers = false;
+      }
+    }
+    return;
+  }
+
+  if (!showDeathOverlay) return;
+  
   const rect = canvas.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const y = e.clientY - rect.top;
-
   const cx = canvas.width / 2;
 
-// Jugar de nuevo
-if (x > cx - 160 && x < cx - 20 && y > canvas.height / 2 + 40 && y < canvas.height / 2 + 90) {
+  // Jugar de nuevo
+  if (x > cx - 180 && x < cx - 40 && y > canvas.height / 2 + 40 && y < canvas.height / 2 + 90) {
     showDeathOverlay = false;
-  if (lastGameMode === "online") {
-    startOnlineMode();
-  } else {
-    resetBotsMode();
+    if (lastGameMode === "online") {
+      startOnlineMode();
+    } else {
+      resetBotsMode();
+    }
   }
-}
+  
   // Volver al menú
-  if (x > cx + 20 && x < cx + 160 && y > canvas.height / 2 + 40 && y < canvas.height / 2 + 90) {
+  if (x > cx + 40 && x < cx + 180 && y > canvas.height / 2 + 40 && y < canvas.height / 2 + 90) {
     showDeathOverlay = false;
     gameMode = null;
-    player.dead = false; // Si está en el contexto de muerte
+    player.dead = false;
 
-// Si estabas en online, desconecta el socket y limpia todo
-if (isOnline && socket) {
-  socket.disconnect();
-  socket = null;
-  isOnline = false;
-  playerId = null;
-  otherPlayers = {};
-  waitingForPlayers = false;
-  // Limpia tu jugador local
-  player.x = worldWidth / 2;
-  player.y = worldHeight / 2;
-  player.radius = 10;
-  player.polarity = 1;
-  player.fieldRadius = 60;
-  player.health = 100;
-  player.maxHealth = 100;
-  player.kills = 0;
-  player.velocity = { x: 0, y: 0 };
-  player.hitTimer = 0;
-  player.specialItem1 = null;
-  player.specialItem2 = null;
-  player.dead = false;
-}
-}
+    if (isOnline && socket) {
+      socket.disconnect();
+      socket = null;
+      isOnline = false;
+      playerId = null;
+      otherPlayers = {};
+      waitingForPlayers = false;
+      player.x = worldWidth / 2;
+      player.y = worldHeight / 2;
+      player.radius = 10;
+      player.polarity = 1;
+      player.fieldRadius = 60;
+      player.health = 100;
+      player.maxHealth = 100;
+      player.kills = 0;
+      player.velocity = { x: 0, y: 0 };
+      player.hitTimer = 0;
+      player.specialItem1 = null;
+      player.specialItem2 = null;
+      player.dead = false;
+    }
+  }
+  
+  // Modo espectador (solo si es online y posición != 2)
+  if (isOnline && window._endPosition !== 2 && window._endType !== "victory" &&
+      x > cx - 70 && x < cx + 70 && y > canvas.height / 2 + 110 && y < canvas.height / 2 + 160) {
+    startSpectatorMode();
+  }
 });
 
 canvas.addEventListener('touchstart', function(e) {
-if (!showDeathOverlay) return;
+  // Click en ranking final
+  if (gameEndRanking) {
+    const rect = canvas.getBoundingClientRect();
+    const touch = e.touches[0];
+    const x = (touch.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (touch.clientY - rect.top) * (canvas.height / rect.height);
+    
+    // Botón volver al menú en ranking
+    if (x > canvas.width / 2 - 100 && x < canvas.width / 2 + 100 && 
+        y > canvas.height - 120 && y < canvas.height - 70) {
+      gameEndRanking = null;
+      isSpectatorMode = false;
+      spectatorTarget = null;
+      gameMode = null;
+      if (socket) {
+        socket.disconnect();
+        socket = null;
+        isOnline = false;
+        playerId = null;
+        otherPlayers = {};
+        waitingForPlayers = false;
+      }
+    }
+    return;
+  }
+
+  if (!showDeathOverlay) return;
+  
   const rect = canvas.getBoundingClientRect();
   const touch = e.touches[0];
   const x = (touch.clientX - rect.left) * (canvas.width / rect.width);
   const y = (touch.clientY - rect.top) * (canvas.height / rect.height);
-
   const cx = canvas.width / 2;
 
   // Jugar de nuevo
-if (x > cx - 160 && x < cx - 20 && y > canvas.height / 2 + 40 && y < canvas.height / 2 + 90) {
+  if (x > cx - 180 && x < cx - 40 && y > canvas.height / 2 + 40 && y < canvas.height / 2 + 90) {
     showDeathOverlay = false;
-  if (lastGameMode === "online") {
-    startOnlineMode();
-  } else {
-    resetBotsMode();
+    if (lastGameMode === "online") {
+      startOnlineMode();
+    } else {
+      resetBotsMode();
+    }
   }
-}
 
   // Volver al menú
-  if (x > cx + 20 && x < cx + 160 && y > canvas.height / 2 + 40 && y < canvas.height / 2 + 90) {
+  if (x > cx + 40 && x < cx + 180 && y > canvas.height / 2 + 40 && y < canvas.height / 2 + 90) {
     showDeathOverlay = false;
     gameMode = null;
-    player.dead = false; // Si está en el contexto de muerte
+    player.dead = false;
 
-// Si estabas en online, desconecta el socket y limpia todo
-if (isOnline && socket) {
-  socket.disconnect();
-  socket = null;
-  isOnline = false;
-  playerId = null;
-  otherPlayers = {};
-  waitingForPlayers = false;
-  // Limpia tu jugador local
-  player.x = worldWidth / 2;
-  player.y = worldHeight / 2;
-  player.radius = 10;
-  player.polarity = 1;
-  player.fieldRadius = 60;
-  player.health = 100;
-  player.maxHealth = 100;
-  player.kills = 0;
-  player.velocity = { x: 0, y: 0 };
-  player.hitTimer = 0;
-  player.specialItem1 = null;
-  player.specialItem2 = null;
-  player.dead = false;
-}
+    if (isOnline && socket) {
+      socket.disconnect();
+      socket = null;
+      isOnline = false;
+      playerId = null;
+      otherPlayers = {};
+      waitingForPlayers = false;
+      player.x = worldWidth / 2;
+      player.y = worldHeight / 2;
+      player.radius = 10;
+      player.polarity = 1;
+      player.fieldRadius = 60;
+      player.health = 100;
+      player.maxHealth = 100;
+      player.kills = 0;
+      player.velocity = { x: 0, y: 0 };
+      player.hitTimer = 0;
+      player.specialItem1 = null;
+      player.specialItem2 = null;
+      player.dead = false;
+    }
+  }
+  
+  // Modo espectador
+  if (isOnline && window._endPosition !== 2 && window._endType !== "victory" &&
+      x > cx - 70 && x < cx + 70 && y > canvas.height / 2 + 110 && y < canvas.height / 2 + 160) {
+    startSpectatorMode();
   }
 });
 
@@ -2594,33 +2729,182 @@ function useSpecial(slot) {
   activateSpecialItem(player, slot);
 }
 
-function showEndOverlay(type, position = null) {
+function showEndOverlay(type, position = null, killer = null) {
   showDeathOverlay = true;
   player.dead = true;
-  window._endType = type; // "death" o "victory"
+  window._endType = type;
   window._endPosition = position;
-  // Desconecta del servidor SOLO si ya estabas conectado
-  if (isOnline && socket) {
-    socket.disconnect();
-    socket = null;
-    isOnline = false;
-    playerId = null;
-    otherPlayers = {};
-    waitingForPlayers = false;
+  
+  // Guarda el ID del killer para el modo espectador
+  if (killer) {
+    killerPlayerId = killer;
   }
+  
+  // Desconecta del servidor SOLO si NO es online o si es victoria
+  if (type === "victory" || !isOnline) {
+    if (isOnline && socket) {
+      socket.disconnect();
+      socket = null;
+      isOnline = false;
+      playerId = null;
+      otherPlayers = {};
+      waitingForPlayers = false;
+    }
+  }
+}
+
+function startSpectatorMode() {
+  isSpectatorMode = true;
+  showDeathOverlay = false;
+  
+  // Sigue al killer si existe y está vivo
+  if (killerPlayerId && otherPlayers[killerPlayerId] && !otherPlayers[killerPlayerId].dead) {
+    spectatorTarget = killerPlayerId;
+  } else {
+    // Si no hay killer o está muerto, sigue a un jugador vivo aleatorio
+    const alivePlayers = Object.values(otherPlayers).filter(p => !p.dead && p.health > 0);
+    if (alivePlayers.length > 0) {
+      spectatorTarget = alivePlayers[Math.floor(Math.random() * alivePlayers.length)].id;
+    }
+  }
+  
+  // Notifica al servidor que estamos en modo espectador
+  if (socket) {
+    socket.emit('spectatorMode', { active: true, target: spectatorTarget });
+  }
+}
+
+function switchSpectatorTarget() {
+  if (!isSpectatorMode) return;
+  
+  const alivePlayers = Object.values(otherPlayers).filter(p => !p.dead && p.health > 0);
+  if (alivePlayers.length === 0) {
+    spectatorTarget = null;
+    return;
+  }
+  
+  // Encuentra el siguiente jugador vivo
+  let currentIndex = -1;
+  for (let i = 0; i < alivePlayers.length; i++) {
+    if (alivePlayers[i].id === spectatorTarget) {
+      currentIndex = i;
+      break;
+    }
+  }
+  
+  const nextIndex = (currentIndex + 1) % alivePlayers.length;
+  spectatorTarget = alivePlayers[nextIndex].id;
+  
+  if (socket) {
+    socket.emit('spectatorMode', { active: true, target: spectatorTarget });
+  }
+}
+
+function drawGameEndRanking() {
+  if (!gameEndRanking) return;
+  
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,0.85)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  
+  // Título
+  ctx.fillStyle = "#FFD700";
+  ctx.font = "bold 42px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("🏆 RANKING FINAL 🏆", canvas.width / 2, 80);
+  
+  // Ranking
+  const startY = 140;
+  const rowHeight = 45;
+  
+  gameEndRanking.forEach((playerData, index) => {
+    const y = startY + index * rowHeight;
+    const position = index + 1;
+    
+    // Color según posición
+    let color = "#ffffff";
+    if (position === 1) color = "#FFD700"; // Oro
+    else if (position === 2) color = "#C0C0C0"; // Plata
+    else if (position === 3) color = "#CD7F32"; // Bronce
+    
+    ctx.fillStyle = color;
+    ctx.font = "bold 28px Arial";
+    ctx.textAlign = "left";
+    
+    // Posición y nombre
+    ctx.fillText(`${position}. ${playerData.name}`, 150, y);
+    
+    // Stats
+    ctx.font = "24px Arial";
+    ctx.fillStyle = "#cccccc";
+    ctx.textAlign = "right";
+    ctx.fillText(`Kills: ${playerData.kills}`, canvas.width - 150, y);
+  });
+  
+  // Botón volver al menú
+  ctx.fillStyle = "#cc3333";
+  ctx.fillRect(canvas.width / 2 - 100, canvas.height - 120, 200, 50);
+  ctx.fillStyle = "#fff";
+  ctx.font = "20px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("Volver al menú", canvas.width / 2, canvas.height - 88);
+  
+  ctx.restore();
+}
+
+function drawSpectatorUI() {
+  if (!isSpectatorMode || !spectatorTarget) return;
+  
+  const target = otherPlayers[spectatorTarget];
+  if (!target) return;
+  
+  ctx.save();
+  
+  // Panel superior del espectador
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.fillRect(0, 0, canvas.width, 60);
+  
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 24px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText(`👁️ ESPECTANDO: ${target.name}`, canvas.width / 2, 25);
+  
+  ctx.font = "16px Arial";
+  ctx.fillText(`Kills: ${target.kills || 0} | Vida: ${Math.ceil(target.health)}/${target.maxHealth}`, canvas.width / 2, 45);
+  
+  // Instrucciones
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.fillRect(10, canvas.height - 80, 300, 70);
+  
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "14px Arial";
+  ctx.textAlign = "left";
+  ctx.fillText("ESPACIO: Cambiar jugador", 15, canvas.height - 55);
+  ctx.fillText("ESC: Volver al menú", 15, canvas.height - 35);
+  ctx.fillText("ENTER: Ranking (si terminó)", 15, canvas.height - 15);
+  
+  ctx.restore();
 }
 
 function mainLoop(time = 0) {
   document.getElementById('nameContainer').style.display = (gameMode === null) ? 'block' : 'none';
+  
+  if (gameEndRanking) {
+    drawGameEndRanking();
+    requestAnimationFrame(mainLoop);
+    return;
+  }
+  
   if (showDeathOverlay) {
     drawDeathOverlay();
     requestAnimationFrame(mainLoop);
     return;
   }
+  
   if (gameMode === null) {
     drawMagnetMenu();
   } else if (gameMode === "online" && waitingForPlayers && typeof window._lobbyTimeLeft === "number") {
-    // SOLO muestra la pantalla de espera si hay tiempo de lobby
+    // Pantalla de espera...
     ctx.save();
     ctx.fillStyle = darkMode ? "#10131a" : "#e3f0ff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -2643,7 +2927,7 @@ function mainLoop(time = 0) {
       );
     }
     ctx.restore();
-    // Solo emite posición, NO ejecuta gameLoop ni handleDamage
+    
     if (isOnline && socket && playerId) {
       if (socket) socket.emit("update", {
         x: player.x,
@@ -2670,9 +2954,14 @@ function mainLoop(time = 0) {
       drawDeathOverlay();
     }
   } else if (gameMode === "online" && (!waitingForPlayers || typeof window._lobbyTimeLeft !== "number")) {
-    // SOLO aquí ejecuta la partida online
     gameLoop(time);
-    if (isOnline && socket && playerId) {
+    
+    // NUEVO: Dibuja UI del espectador si está activo
+    if (isSpectatorMode) {
+      drawSpectatorUI();
+    }
+    
+    if (isOnline && socket && playerId && !isSpectatorMode) {
       if (socket) socket.emit("update", {
         x: player.x,
         y: player.y,
