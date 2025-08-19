@@ -40,11 +40,11 @@ let deathPosition = null;
 let showDeathOverlay = false;
 
 let orbs = [];
-const ORB_COUNT_MAX = 40;
+const ORB_COUNT_MAX = 80;
 const ORB_RADIUS = 5;
 
-const worldWidth = 4000;
-const worldHeight = 4000;
+const worldWidth = 6000;
+const worldHeight = 6000;
 
 let currentSafeRadius = Math.hypot(worldWidth / 2, worldHeight / 2);
 function launchMissile(p) {
@@ -90,11 +90,35 @@ function createInitialOrbs() {
 }
 
 function spawnOrb() {
-  if (orbs.length >= 150) return; // Límite mayor: más orbes
-  const x = Math.random() * (worldWidth - 200) + 100;
-  const y = Math.random() * (worldHeight - 200) + 100;
-  const radius = 3 + Math.random() * 2;
-  orbs.push({ x, y, radius });
+  if (orbs.length >= ORB_COUNT_MAX) return;
+  let tries = 0;
+  while (tries < 20) {
+    const angle = Math.random() * 2 * Math.PI;
+    const r = Math.random() * (currentSafeRadius - 100);
+    const x = worldWidth / 2 + Math.cos(angle) * r;
+    const y = worldHeight / 2 + Math.sin(angle) * r;
+    if (x > ORB_RADIUS && x < worldWidth - ORB_RADIUS && y > ORB_RADIUS && y < worldHeight - ORB_RADIUS) {
+      orbs.push({ x, y, radius: ORB_RADIUS });
+      break;
+    }
+    tries++;
+  }
+}
+
+function spawnSpecialItem() {
+  if (specialItems.length >= 8) return; // más objetos simultáneos
+  let tries = 0;
+  while (tries < 20) {
+    const angle = Math.random() * 2 * Math.PI;
+    const r = Math.random() * (currentSafeRadius - 100);
+    const x = worldWidth / 2 + Math.cos(angle) * r;
+    const y = worldHeight / 2 + Math.sin(angle) * r;
+    if (x > SPECIAL_ITEM_RADIUS && x < worldWidth - SPECIAL_ITEM_RADIUS && y > SPECIAL_ITEM_RADIUS && y < worldHeight - SPECIAL_ITEM_RADIUS) {
+      specialItems.push({ x, y, type: SPECIAL_ITEM_TYPES[Math.floor(Math.random() * SPECIAL_ITEM_TYPES.length)], radius: SPECIAL_ITEM_RADIUS });
+      break;
+    }
+    tries++;
+  }
 }
 
 // Parámetros para fuerzas
@@ -154,7 +178,7 @@ let player = {
   hitTimer: 0
 };
 
-const BOT_COUNT = 3;
+const BOT_COUNT = 9;
 
 let bots = [];
 function createBots() {
@@ -510,6 +534,7 @@ let orbTarget = orbs
       }
     }
   }
+updateBotSpecialItem(bot);
 
   // Suma fuerzas de repulsión/atracción con otras entidades vivas
   let totalForce = { x: 0, y: 0 };
@@ -1123,7 +1148,7 @@ if (battleTimer > 0) {
 }
 
 function drawMiniMap() {
-  const w = 110, h = 110, pad = 18;
+  const w = 160, h = 160, pad = 18;
   const mapX = canvas.width - w - pad;
   const mapY = canvas.height - h - pad;
 
@@ -1730,7 +1755,7 @@ if (showDeathOverlay) {
 
 let lastTime = 0;
 let orbSpawnTimer = 0;
-const ORB_SPAWN_INTERVAL = 1500;
+const ORB_SPAWN_INTERVAL = 900;
 
 function resetOnlineMode(orbsFromServer, startTimeFromServer, specialItemsFromServer) {
   deathPosition = null;
@@ -2032,7 +2057,7 @@ socket.on('syncPlayers', (playersObj) => {
 const SPECIAL_ITEM_TYPES = ["freeze", "hook", "missile", "repulse", "shield"];
 let specialItems = [];
 const SPECIAL_ITEM_RADIUS = 7;
-const SPECIAL_ITEM_RESPAWN_INTERVAL = 10000;
+const SPECIAL_ITEM_RESPAWN_INTERVAL = 6000;
 let lastSpecialItemSpawn = 0;
 
 // Asignar item al jugador/bot si aún no tiene
@@ -2168,14 +2193,6 @@ function applyHook(p) {
     }
     nearest.hitTimer = 10;
   }
-}
-
-function spawnSpecialItem() {
-  if (specialItems.length >= 5) return;
-  const type = SPECIAL_ITEM_TYPES[Math.floor(Math.random() * SPECIAL_ITEM_TYPES.length)];
-  const x = Math.random() * (worldWidth - 2 * SPECIAL_ITEM_RADIUS) + SPECIAL_ITEM_RADIUS;
-  const y = Math.random() * (worldHeight - 2 * SPECIAL_ITEM_RADIUS) + SPECIAL_ITEM_RADIUS;
-  specialItems.push({ x, y, type, radius: SPECIAL_ITEM_RADIUS });
 }
 
 // --- NUEVO: Dibuja iconos de special items con emojis y coherencia ---
@@ -2414,29 +2431,54 @@ function updateBotSpecialItem(bot) {
   const offensiveItems = ["freeze", "hook", "missile"];
   const defensiveItems = ["shield", "repulse"];
 
-  let enemies = [player, ...bots.filter(b => b !== bot)];
-  let nearbyEnemies = enemies.filter(e => Math.hypot(bot.x - e.x, bot.y - e.y) < 250);
+  let enemies = [player, ...bots.filter(b => b !== bot && !b.dead && b.health > 0)];
+  let nearbyEnemies = enemies.filter(e => Math.hypot(bot.x - e.x, bot.y - e.y) < 250 && !e.dead && e.health > 0);
   let lowHealth = bot.health < bot.maxHealth * 0.4;
 
+  // --- USO INTELIGENTE DE OBJETOS ---
   ['specialItem1', 'specialItem2'].forEach(slot => {
     const item = bot[slot];
     if (!item) return;
 
+    // Repulse: si hay 2+ enemigos cerca o está rodeado
     if (item === "repulse" && nearbyEnemies.length >= 2) {
       activateSpecialItem(bot, slot);
-    } else if (item === "shield" && lowHealth) {
+    }
+    // Shield: si tiene poca vida y hay enemigos cerca
+    else if (item === "shield" && lowHealth && nearbyEnemies.length > 0) {
       activateSpecialItem(bot, slot);
-    } else if (offensiveItems.includes(item) && nearbyEnemies.length > 0) {
-      if (Math.random() < 0.02) activateSpecialItem(bot, slot);
+    }
+    // Freeze/missile/hook: si hay enemigo cerca y no está congelado
+    else if (offensiveItems.includes(item) && nearbyEnemies.length > 0) {
+      // Prioriza congelar/misil si el enemigo es más grande o tiene más vida
+      let target = nearbyEnemies[0];
+      if (target && (target.radius > bot.radius || target.health > bot.health)) {
+        if (Math.random() < 0.5) activateSpecialItem(bot, slot);
+      } else if (Math.random() < 0.1) {
+        activateSpecialItem(bot, slot);
+      }
     }
   });
 
-  // SI NO TIENE OBJETO Y HAY ALGUNO CERCA, IR A POR ÉL
+  // --- BÚSQUEDA ACTIVA DE OBJETOS ---
   if (!bot.specialItem1 || !bot.specialItem2) {
-    const nearbyItem = specialItems.find(i => Math.hypot(i.x - bot.x, i.y - bot.y) < 200);
-    if (nearbyItem) {
-      bot.targetX = nearbyItem.x;
-      bot.targetY = nearbyItem.y;
+    // Busca el objeto especial más cercano dentro de la zona segura
+    let bestItem = null, minDist = Infinity;
+    for (let i = 0; i < specialItems.length; i++) {
+      const item = specialItems[i];
+      // Solo busca si está dentro de la zona segura
+      const distToCenter = Math.hypot(item.x - worldWidth / 2, item.y - worldHeight / 2);
+      if (distToCenter > currentSafeRadius - 40) continue;
+      const dist = Math.hypot(item.x - bot.x, item.y - bot.y);
+      if (dist < minDist) {
+        minDist = dist;
+        bestItem = item;
+      }
+    }
+    // Si hay un objeto especial cerca, ve a por él
+    if (bestItem && minDist < 900) {
+      bot.targetX = bestItem.x;
+      bot.targetY = bestItem.y;
     }
   }
 }
