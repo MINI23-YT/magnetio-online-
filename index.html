@@ -82,8 +82,8 @@
       touch-action: none;
     }
     #btnP { right: 20px; bottom: 100px; }
-    #btn1 { right: 80px; bottom: 50px; }
-    #btn2 { right: 20px; bottom: 20px; }
+    #btnE { right: 80px; bottom: 50px; }
+    #btnQ { right: 20px; bottom: 20px; }
 
     #joystickContainer {
       position: fixed;
@@ -158,11 +158,11 @@
 </div>
   <canvas id="gameCanvas" width="1200" height="800"></canvas>
 
-  <div id="mobileControls">
-    <button id="btnP" class="mobile-button" onclick="changePolarity()">P</button>
-    <button id="btn1" class="mobile-button" onclick="useSpecial('specialItem1')">1</button>
-    <button id="btn2" class="mobile-button" onclick="useSpecial('specialItem2')">2</button>
-  </div>
+<div id="mobileControls">
+  <button id="btnQ" class="mobile-button" ontouchstart="handleMobileQButton(event)">Q</button>
+  <button id="btnE" class="mobile-button" ontouchstart="handleMobileEButton(event)">E</button>
+  <button id="btnP" class="mobile-button" ontouchstart="handleMobilePButton(event)">P</button>
+</div>
 
   <div id="joystickContainer">
     <div id="joystick"></div>
@@ -238,12 +238,12 @@
     }
 
     // Multitouch para botones móviles
-    document.querySelectorAll('.mobile-button').forEach(btn => {
-      btn.addEventListener('touchstart', function(e) {
-        e.stopPropagation();
-        this.click();
-      }, { passive: false });
-    });
+document.querySelectorAll('.mobile-button').forEach(btn => {
+  btn.addEventListener('touchstart', function(e) {
+    e.stopPropagation();
+    this.click();
+  }, { passive: false });
+});
   </script>
   <script>
 function dispatchEscape() {

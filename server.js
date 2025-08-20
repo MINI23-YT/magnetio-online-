@@ -107,24 +107,47 @@ function checkGameEnd() {
   const alivePlayers = Object.values(players).filter(p => !p.dead && p.health > 0);
   
   if (alivePlayers.length <= 1) {
-    // El juego ha terminado, crear ranking
+    // El juego ha terminado, crear ranking COMPLETO
     const allPlayers = Object.values(players);
     
-    // Ordena por kills y salud para el ranking
-    const ranking = allPlayers.sort((a, b) => {
-      if (b.kills !== a.kills) return b.kills - a.kills;
-      return b.health - a.health;
-    }).map((player, index) => ({
-      name: player.name || "Jugador",
-      position: index + 1,
-      kills: player.kills || 0,
-      alive: !player.dead && player.health > 0
-    }));
+    console.log('Datos de jugadores antes del ranking:', allPlayers.map(p => ({
+      name: p.name,
+      kills: p.kills,
+      maxHealthEverReached: p.maxHealthEverReached,
+      dead: p.dead,
+      health: p.health
+    })));
     
-    // Envía el ranking final a todos los clientes (jugadores y espectadores)
+    // NUEVO RANKING: Ordena por orden de muerte (último vivo = posición 1)
+    const ranking = allPlayers
+      .sort((a, b) => {
+        // Si uno está vivo y otro muerto, el vivo va primero
+        if ((!a.dead && a.health > 0) && (b.dead || b.health <= 0)) return -1;
+        if ((a.dead || a.health <= 0) && (!b.dead && b.health > 0)) return 1;
+        
+        // Si ambos están muertos, ordena por kills y luego por vida máxima
+        const aKills = a.kills || 0;
+        const bKills = b.kills || 0;
+        const aMaxHealth = a.maxHealthEverReached || a.maxHealth || 60;
+        const bMaxHealth = b.maxHealthEverReached || b.maxHealth || 60;
+        
+        if (bKills !== aKills) return bKills - aKills;
+        return bMaxHealth - aMaxHealth;
+      })
+      .map((player, index) => ({
+        name: player.name || "Jugador",
+        position: index + 1,
+        kills: player.kills || 0,
+        maxHealthEverReached: player.maxHealthEverReached || player.maxHealth || 60,
+        alive: !player.dead && player.health > 0
+      }));
+    
+    console.log('Ranking final generado:', ranking);
+    
+    // Envía el ranking final a todos los clientes
     io.emit('gameEnd', ranking);
     
-    console.log('Juego terminado. Ranking:', ranking);
+    console.log('Juego terminado. Ranking completo enviado:', ranking.length, 'jugadores');
     
     // Resetea el juego después de un tiempo
     setTimeout(() => {
@@ -135,7 +158,7 @@ function checkGameEnd() {
       orbs = [];
       specialItems = [];
       console.log('Juego reseteado');
-    }, 10000); // 10 segundos para ver el ranking
+    }, 30000); // 30 segundos para ver el ranking
   }
 }
 
@@ -148,17 +171,19 @@ io.on('connection', (socket) => {
 
   // Si la partida ya empezó, añade al jugador y mándale el estado actual
   if (gameStarted) {
-    players[socket.id] = {
-      x: CENTER_X,
-      y: CENTER_Y,
-      radius: 10,
-      polarity: 1,
-      fieldRadius: 60,
-      health: 100,
-      maxHealth: 100,
-      dead: false,
-      name: "Jugador"
-    };
+players[socket.id] = {
+  x: CENTER_X,
+  y: CENTER_Y,
+  radius: 10,
+  polarity: 1,
+  fieldRadius: 60,
+  health: 60,        // CAMBIADO: vida inicial 60
+  maxHealth: 60,     // CAMBIADO: vida máx inicial 60
+  maxHealthEverReached: 60, // NUEVO: para ranking final
+  dead: false,
+  name: "Jugador",
+  kills: 0           // NUEVO: contador de kills
+};
     socket.emit('init', { id: socket.id, players });
     // Envía el estado de la partida con el tiempo REAL de inicio
     socket.emit('startGame', {
@@ -170,17 +195,19 @@ io.on('connection', (socket) => {
   }
     // Si no hay partida, añade al jugador al lobby
   if (Object.keys(players).length < 10) {
-    players[socket.id] = {
-      x: CENTER_X,
-      y: CENTER_Y,
-      radius: 10,
-      polarity: 1,
-      fieldRadius: 60,
-      health: 100,
-      maxHealth: 100,
-      dead: false,
-      name: "Jugador"
-    };
+players[socket.id] = {
+  x: CENTER_X,
+  y: CENTER_Y,
+  radius: 10,
+  polarity: 1,
+  fieldRadius: 60,
+  health: 60,        // CAMBIADO: vida inicial 60
+  maxHealth: 60,     // CAMBIADO: vida máx inicial 60
+  maxHealthEverReached: 60, // NUEVO: para ranking final
+  dead: false,
+  name: "Jugador",
+  kills: 0           // NUEVO: contador de kills
+};
     socket.emit('init', { id: socket.id, players });
 
     if (Object.keys(players).length === 1) {
@@ -225,6 +252,11 @@ socket.on('update', (data) => {
   if (players[socket.id]) {
     Object.assign(players[socket.id], data);
     players[socket.id].id = socket.id;
+    
+    // Actualizar récord de vida máxima si es necesario
+    if (data.maxHealth && data.maxHealth > (players[socket.id].maxHealthEverReached || 60)) {
+      players[socket.id].maxHealthEverReached = data.maxHealth;
+    }
   }
   io.emit('syncPlayers', players);
 });
@@ -247,6 +279,37 @@ socket.on('playerDied', (data) => {
     if (data.killedBy) {
       notifyPlayerKilled(data.killedBy, socket.id);
     }
+    
+    checkGameEnd();
+  }
+});
+
+socket.on('playerKill', (data) => {
+  // data = { killerId: string, victimId: string, killerNewStats: object }
+  if (players[data.killerId] && players[data.victimId]) {
+    // Actualizar stats del killer
+    players[data.killerId].kills = (players[data.killerId].kills || 0) + 1;
+    
+    if (data.killerNewStats) {
+      players[data.killerId].health = data.killerNewStats.health;
+      players[data.killerId].maxHealth = data.killerNewStats.maxHealth;
+      players[data.killerId].fieldRadius = data.killerNewStats.fieldRadius;
+      
+      // Actualizar récord si es necesario
+      if (data.killerNewStats.maxHealth > (players[data.killerId].maxHealthEverReached || 60)) {
+        players[data.killerId].maxHealthEverReached = data.killerNewStats.maxHealth;
+      }
+    }
+    
+    // Marcar víctima como muerta
+    players[data.victimId].dead = true;
+    players[data.victimId].health = 0;
+    
+    console.log(`${players[data.killerId].name} mató a ${players[data.victimId].name}`);
+    
+    // Notificar a todos los clientes
+    io.emit('playerKilled', { killerId: data.killerId, victimId: data.victimId });
+    io.emit('syncPlayers', players);
     
     checkGameEnd();
   }

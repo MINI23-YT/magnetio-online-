@@ -133,34 +133,37 @@ const REPULSION_STRENGTH_BASE = 0.1;
 const FIELD_FORCE_RADIUS_MULTIPLIER = 2;
 
 function speedBySize(radius, fieldRadius = 60) {
-  const minRadius = 10;
-  const maxRadius = 150;
-  const maxField = 150;
-
-  let baseSpeed = 4.2;
-  let speed = baseSpeed;
-
-  // Penaliza según el campo electromagnético (como en agar.io)
-  let slowdownFactor = (fieldRadius - 60) / (maxField - 60);
-  speed -= slowdownFactor * 2.2; // penalización
-
-  return Math.max(MIN_SPEED, speed);
+  const minFieldRadius = 60;
+  const maxFieldRadius = 500;
+  let baseSpeed = 4.5;
+  // Penalización MUY fuerte: cuanto más grande, mucho más lento
+  let slowdownFactor = Math.pow((fieldRadius - minFieldRadius) / (maxFieldRadius - minFieldRadius), 1.2);
+  let speed = baseSpeed - slowdownFactor * 4.2; // penalización máxima más fuerte
+  return Math.max(0.5, speed); // mínimo absoluto
 }
 
 function damageBySize(radius) {
-  return 0.5 + (radius - 10) * 0.03; // Ajusta el 0.03 para más o menos escalado
+  return 0.5; // DAÑO FIJO PARA TODOS, sin importar tamaño
 }
 
 function growOnKill(killer, victim) {
-  // Crecimiento MUCHO mayor y vida al máximo
-  const growth = Math.max(10, Math.floor(victim.radius * 1.2)); // antes 0.7, ahora 1.2
-  const fieldGrowth = Math.max(20, Math.floor(victim.fieldRadius * 0.9)); // antes 0.5, ahora 0.9
-  const healthGain = Math.max(60, Math.floor(victim.maxHealth * 1.2)); // antes 0.7, ahora 1.2
-
-  killer.fieldRadius = Math.min(killer.fieldRadius + fieldGrowth, 150);
-  killer.maxHealth += healthGain;
-  killer.health = killer.maxHealth; // Vida al máximo SIEMPRE
-  killer.kills = (killer.kills || 0) + 1; // Suma kill
+  // Incremento basado en la vida de la víctima
+  const healthGain = victim.maxHealth; // Ganas toda la vida de la víctima
+  const fieldGrowth = victim.fieldRadius * 0.3; // Campo crece un 30% de la víctima
+  
+  // Aplicar límites máximos
+  const MAX_HEALTH = 500;
+  const MAX_FIELD = 500;
+  
+  killer.maxHealth = Math.min(killer.maxHealth + healthGain, MAX_HEALTH);
+  killer.fieldRadius = Math.min(killer.fieldRadius + fieldGrowth, MAX_FIELD);
+  killer.health = killer.maxHealth; // Vida siempre al máximo después de matar
+  killer.kills = (killer.kills || 0) + 1;
+  
+  // Actualizar récord de vida máxima alcanzada
+  if (killer.maxHealth > (killer.maxHealthEverReached || 60)) {
+    killer.maxHealthEverReached = killer.maxHealth;
+  }
 }
 
 let player = {
@@ -168,14 +171,15 @@ let player = {
   name: localStorage.getItem('playerName') || "Jugador",
   x: worldWidth / 2,
   y: worldHeight / 2,
-  radius: 10,
+  radius: 10, // Núcleo siempre pequeño
   polarity: 1,
   speed: 3,
-  fieldRadius: 60,
-  health: 100,
-  maxHealth: 100,
+  fieldRadius: 60, // Campo electromagnético que crece
+  health: 60, // NUEVA VIDA INICIAL
+  maxHealth: 60, // NUEVA VIDA MAX INICIAL
+  maxHealthEverReached: 60, // NUEVO: Para ranking final
   baseFieldRadius: 60,
-  baseMaxHealth: 100,
+  baseMaxHealth: 60,
   kills: 0,
   score: 0,
   velocity: { x: 0, y: 0 },
@@ -193,12 +197,14 @@ function createBots() {
       name: "Bot " + (i + 1),
       x: Math.random() * (worldWidth - 20) + 10,
       y: Math.random() * (worldHeight - 20) + 10,
-      radius: 10,
+      radius: 10, // Núcleo siempre pequeño
       polarity: Math.random() < 0.5 ? 1 : -1,
-      fieldRadius: 60,
-      health: 100,
-      maxHealth: 100,
+      fieldRadius: 60, // Campo electromagnético inicial
+      health: 60, // NUEVA VIDA INICIAL
+      maxHealth: 60, // NUEVA VIDA MAX INICIAL
+      maxHealthEverReached: 60, // NUEVO: Para ranking final
       baseFieldRadius: 60,
+      baseMaxHealth: 60,
       lastPolarityChange: 0,
       kills: 0,
       score: 0,
@@ -394,13 +400,17 @@ function update(deltaTime) {
   updatePlayerMovement(deltaTime);
   applySafeZoneDamage();
 
-  timeSinceLastGrowth += deltaTime;
-  if (timeSinceLastGrowth >= decayInterval) {
-  player.fieldRadius = Math.max(player.baseFieldRadius, player.fieldRadius - decayAmount * 0.1);
-  player.maxHealth = Math.max(player.baseMaxHealth, player.maxHealth - decayAmount * 0.1);
-    player.health = Math.min(player.health, player.maxHealth);
-    timeSinceLastGrowth = 0;
-  }
+timeSinceLastGrowth += deltaTime;
+if (timeSinceLastGrowth >= decayInterval) {
+  // DESGASTE MÁS AGRESIVO
+  const MIN_HEALTH = 60;
+  const MIN_FIELD = 60;
+  
+  player.fieldRadius = Math.max(MIN_FIELD, player.fieldRadius - decayAmount * 0.5); // 5x más rápido
+  player.maxHealth = Math.max(MIN_HEALTH, player.maxHealth - decayAmount * 0.8); // 8x más rápido
+  player.health = Math.min(player.health, player.maxHealth);
+  timeSinceLastGrowth = 0;
+}
   if (gameStartTime) {
   const elapsed = (Date.now() - gameStartTime) / 1000;
   battleTimer = Math.max(0, 300 - elapsed);
@@ -626,8 +636,12 @@ let botSpeed = speedBySize(bot.radius, bot.fieldRadius);
   }
 
   // Decaimiento suave campo y salud máxima
-  bot.fieldRadius = Math.max(bot.baseFieldRadius, bot.fieldRadius - decayAmount * 0.005);
-  bot.health = Math.min(bot.health, bot.maxHealth);
+const MIN_HEALTH = 60;
+const MIN_FIELD = 60;
+const decayAmount = (bot.maxHealth - MIN_HEALTH) * 0.002 * deltaTime;
+bot.fieldRadius = Math.max(MIN_FIELD, bot.fieldRadius - decayAmount * 0.5);
+bot.maxHealth = Math.max(MIN_HEALTH, bot.maxHealth - decayAmount * 0.8);
+bot.health = Math.min(bot.health, bot.maxHealth);
 }
 
 function handleDamage() {
@@ -863,6 +877,17 @@ if (isOnline && p.id === player.id && !waitingForPlayers && battleTimer > 0) {
   showEndOverlay("death", deathPosition);
   return;
         }
+  // --- NUEVO: Si es el jugador local en modo bots, muestra overlay de muerte ---
+    if (!isOnline && p.id === player.id) {
+      if (deathPosition === null) {
+        let playersList = [player, ...bots];
+        const totalPlayers = playersList.length;
+        const muertosAntes = playersList.filter(pl => pl.dead && pl !== player).length;
+        deathPosition = totalPlayers - muertosAntes;
+      }
+      showEndOverlay("death", deathPosition);
+      return;
+    }
       }
     }
   });
@@ -920,15 +945,16 @@ function resetBotsMode() {
   deathPosition = null;
   player.name = localStorage.getItem('playerName') || "Jugador";
   createInitialOrbs();
-  createBots(); // ¡Esto es esencial!
+  createBots();
   player.id = 'player';
   player.x = worldWidth / 2;
   player.y = worldHeight / 2;
-  player.radius = 10;
+  player.radius = 10; // Núcleo siempre pequeño
   player.polarity = 1;
-  player.fieldRadius = 60;
-  player.health = 100;
-  player.maxHealth = 100;
+  player.fieldRadius = 60; // Campo inicial
+  player.health = 60; // VIDA INICIAL
+  player.maxHealth = 60; // VIDA MAX INICIAL
+  player.maxHealthEverReached = 60; // NUEVO
   player.kills = 0;
   player.velocity = { x: 0, y: 0 };
   player.hitTimer = 0;
@@ -936,18 +962,18 @@ function resetBotsMode() {
   timeSinceLastGrowth = 0;
   orbSpawnTimer = 0;
   lastTime = performance.now();
-  // Reinicia ranking de bots
-  bots.forEach(b => { b.kills = 0; b.fieldRadius = b.baseFieldRadius; });
-player.specialItem1 = null;
-player.specialItem2 = null;
+  
+  player.specialItem1 = null;
+  player.specialItem2 = null;
   bots.forEach(b => b.specialItem = null);
+  
   gameStartTime = Date.now();
-battleTimer = 300;
-currentSafeRadius = Math.hypot(worldWidth, worldHeight); // MUCHÍSIMO más grande que el mapa
-safeZoneDamage = 0;
-player.dead = false;
-player.health = player.maxHealth; 
-bots.forEach(b => b.dead = false);
+  battleTimer = 300;
+  currentSafeRadius = Math.hypot(worldWidth, worldHeight);
+  safeZoneDamage = 0;
+  player.dead = false;
+  player.health = player.maxHealth; 
+  bots.forEach(b => b.dead = false);
 }
 
 // Mejora: Animación de absorción de orbes (fade out)
@@ -961,12 +987,23 @@ function handleOrbAbsorption() {
       if (Math.hypot(orb.x - p.x, orb.y - p.y) < p.radius + orb.radius) {
         absorbedOrbs.push({ ...orb, alpha: 1 });
         if (isOnline && orb.id) {
-  socket.emit('orbCollected', orb.id);
-}
+          socket.emit('orbCollected', orb.id);
+        }
         orbs.splice(i, 1);
-        p.fieldRadius = Math.min(p.fieldRadius + 3, 150);
-        p.maxHealth += 5;
-        p.health = Math.min(p.health + p.maxHealth * 0.25, p.maxHealth);
+        
+        // NUEVOS INCREMENTOS
+        const MAX_HEALTH = 500;
+        const MAX_FIELD = 500;
+        
+        p.fieldRadius = Math.min(p.fieldRadius + 2, MAX_FIELD); // Menos crecimiento
+        p.maxHealth = Math.min(p.maxHealth + 3, MAX_HEALTH); // Menos crecimiento
+        p.health = Math.min(p.health + p.maxHealth * 0.15, p.maxHealth); // 15% de curación
+        
+        // Actualizar récord
+        if (p.maxHealth > (p.maxHealthEverReached || 60)) {
+          p.maxHealthEverReached = p.maxHealth;
+        }
+        
         timeSinceLastGrowth = 0;
         break;
       }
@@ -979,9 +1016,19 @@ function handleOrbAbsorption() {
       if (Math.hypot(orb.x - bot.x, orb.y - bot.y) < bot.radius + orb.radius) {
         absorbedOrbs.push({ ...orb, alpha: 1 });
         orbs.splice(i, 1);
-        bot.fieldRadius = Math.min(bot.fieldRadius + 3, 150);
-        bot.maxHealth += 5;
-        bot.health = Math.min(bot.health + bot.maxHealth * 0.25, bot.maxHealth);
+        
+        // NUEVOS INCREMENTOS PARA BOTS
+        const MAX_HEALTH = 500;
+        const MAX_FIELD = 500;
+        
+        bot.fieldRadius = Math.min(bot.fieldRadius + 2, MAX_FIELD);
+        bot.maxHealth = Math.min(bot.maxHealth + 3, MAX_HEALTH);
+        bot.health = Math.min(bot.health + bot.maxHealth * 0.15, bot.maxHealth);
+        
+        // Actualizar récord del bot
+        if (bot.maxHealth > (bot.maxHealthEverReached || 60)) {
+          bot.maxHealthEverReached = bot.maxHealth;
+        }
       }
     }
   });
@@ -1315,60 +1362,60 @@ if (isOnline) {
 }
 // Ranking minimalista y sin mostrar size
 function drawRanking() {
-let playersList = isOnline ? [player, ...Object.values(otherPlayers)] : [player, ...bots];  playersList.forEach(p => p.score = p.kills * 100 + Math.floor(p.fieldRadius));
-  playersList.sort((a, b) => b.score - a.score);
+  let playersList = isOnline ? [player, ...Object.values(otherPlayers)] : [player, ...bots];
+  
+  // ORDENAR POR VIDA (MAYOR A MENOR) en lugar de score
+  playersList.sort((a, b) => b.health - a.health);
 
   // Solo top 3
   playersList = playersList.slice(0, 3);
 
-// --- Cálculo de altura dinámica para el ranking ---
-const rowHeight = 38; // Debe coincidir con el espacio vertical entre jugadores
-const baseY = 47;     // Y inicial del primer jugador
-const extraBottom = 18; // Espacio extra abajo para que no se corte
+  const rowHeight = 38;
+  const baseY = 47;
+  const extraBottom = 18;
+  const rankingHeight = baseY + playersList.length * rowHeight + extraBottom;
 
-const rankingHeight = baseY + playersList.length * rowHeight + extraBottom;
+  // Fondo
+  ctx.save();
+  ctx.globalAlpha = 0.70;
+  ctx.shadowColor = "#222";
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = 'rgba(30,40,60,0.80)';
+  ctx.beginPath();
+  ctx.moveTo(20, 10);
+  ctx.lineTo(180, 10);
+  ctx.quadraticCurveTo(200, 10, 200, 30);
+  ctx.lineTo(200, rankingHeight - 20);
+  ctx.quadraticCurveTo(200, rankingHeight, 180, rankingHeight);
+  ctx.lineTo(20, rankingHeight);
+  ctx.quadraticCurveTo(0, rankingHeight, 0, rankingHeight - 20);
+  ctx.lineTo(0, 30);
+  ctx.quadraticCurveTo(0, 10, 20, 10);
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+  ctx.restore();
 
-// Fondo minimalista con sombra y borde redondeado, opacidad más baja
-ctx.save();
-ctx.globalAlpha = 0.70;
-ctx.shadowColor = "#222";
-ctx.shadowBlur = 8;
-ctx.fillStyle = 'rgba(30,40,60,0.80)';
-ctx.beginPath();
-ctx.moveTo(20, 10);
-ctx.lineTo(180, 10);
-ctx.quadraticCurveTo(200, 10, 200, 30);
-ctx.lineTo(200, rankingHeight - 20);
-ctx.quadraticCurveTo(200, rankingHeight, 180, rankingHeight);
-ctx.lineTo(20, rankingHeight);
-ctx.quadraticCurveTo(0, rankingHeight, 0, rankingHeight - 20);
-ctx.lineTo(0, 30);
-ctx.quadraticCurveTo(0, 10, 20, 10);
-ctx.closePath();
-ctx.fill();
-ctx.shadowBlur = 0;
-ctx.globalAlpha = 1;
-ctx.restore();
+  // Borde
+  ctx.save();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(20, 10);
+  ctx.lineTo(180, 10);
+  ctx.quadraticCurveTo(200, 10, 200, 30);
+  ctx.lineTo(200, rankingHeight - 20);
+  ctx.quadraticCurveTo(200, rankingHeight, 180, rankingHeight);
+  ctx.lineTo(20, rankingHeight);
+  ctx.quadraticCurveTo(0, rankingHeight, 0, rankingHeight - 20);
+  ctx.lineTo(0, 30);
+  ctx.quadraticCurveTo(0, 10, 20, 10);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
 
-// Borde blanco fino
-ctx.save();
-ctx.strokeStyle = '#fff';
-ctx.lineWidth = 1.5;
-ctx.beginPath();
-ctx.moveTo(20, 10);
-ctx.lineTo(180, 10);
-ctx.quadraticCurveTo(200, 10, 200, 30);
-ctx.lineTo(200, rankingHeight - 20);
-ctx.quadraticCurveTo(200, rankingHeight, 180, rankingHeight);
-ctx.lineTo(20, rankingHeight);
-ctx.quadraticCurveTo(0, rankingHeight, 0, rankingHeight - 20);
-ctx.lineTo(0, 30);
-ctx.quadraticCurveTo(0, 10, 20, 10);
-ctx.closePath();
-ctx.stroke();
-ctx.restore();
-
-  // Título minimalista
+  // Título
   ctx.save();
   ctx.font = 'bold 15px Arial';
   ctx.fillStyle = '#fff';
@@ -1376,49 +1423,49 @@ ctx.restore();
   ctx.fillText('RANKING', 100, 27);
   ctx.restore();
 
-  // Lista de jugadores (máx 3, no se salen del recuadro)
-for (let i = 0; i < playersList.length; i++) {
-  let p = playersList[i];
-  let y = 47 + i * 38; // Aumenta el espacio vertical
-  let color = p.polarity === 1 ? '#ff4444' : '#3399ff';
-  let shadow = color;
-  let pulse = 1 + 0.08 * Math.sin(performance.now() / 200 + i);
+  // Lista de jugadores
+  for (let i = 0; i < playersList.length; i++) {
+    let p = playersList[i];
+    let y = 47 + i * 38;
+    let color = p.polarity === 1 ? '#ff4444' : '#3399ff';
+    let shadow = color;
+    let pulse = 1 + 0.08 * Math.sin(performance.now() / 200 + i);
 
-  ctx.save();
-  ctx.font = `bold 15px Arial`;
-  ctx.fillStyle = color;
-  ctx.shadowColor = shadow;
-  ctx.shadowBlur = 6 * pulse;
-  ctx.textAlign = 'left';
+    ctx.save();
+    ctx.font = `bold 15px Arial`;
+    ctx.fillStyle = color;
+    ctx.shadowColor = shadow;
+    ctx.shadowBlur = 6 * pulse;
+    ctx.textAlign = 'left';
 
-  // Nombre (alineado a la izquierda)
-  let nick = p.name || "Jugador";
-  // Limita el ancho del nombre para que no se salga
-  let maxNameWidth = 120;
-  if (ctx.measureText(nick).width > maxNameWidth) {
-    while (ctx.measureText(nick + '…').width > maxNameWidth && nick.length > 0) {
-      nick = nick.slice(0, -1);
+    // Nombre
+    let nick = p.name || "Jugador";
+    let maxNameWidth = 120;
+    if (ctx.measureText(nick).width > maxNameWidth) {
+      while (ctx.measureText(nick + '…').width > maxNameWidth && nick.length > 0) {
+        nick = nick.slice(0, -1);
+      }
+      nick += '…';
     }
-    nick += '…';
-  }
-  ctx.fillText(`${i + 1}. ${nick}`, 26, y);
+    ctx.fillText(`${i + 1}. ${nick}`, 26, y);
 
-  ctx.shadowBlur = 0;
-  ctx.font = '13px Arial';
-  ctx.fillStyle = '#fff';
-  ctx.textAlign = 'left';
-  // Score y kills debajo del nombre, alineados a la izquierda
-  let scoreText = `Score: ${p.score}   Kills: ${p.kills}`;
-  let maxScoreWidth = 150;
-  if (ctx.measureText(scoreText).width > maxScoreWidth) {
-    while (ctx.measureText(scoreText + '…').width > maxScoreWidth && scoreText.length > 0) {
-      scoreText = scoreText.slice(0, -1);
+    ctx.shadowBlur = 0;
+    ctx.font = '13px Arial';
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'left';
+    
+    // CAMBIO: Mostrar VIDA en lugar de score
+    let healthText = `Vida: ${Math.ceil(p.health)}   Kills: ${p.kills}`;
+    let maxHealthWidth = 150;
+    if (ctx.measureText(healthText).width > maxHealthWidth) {
+      while (ctx.measureText(healthText + '…').width > maxHealthWidth && healthText.length > 0) {
+        healthText = healthText.slice(0, -1);
+      }
+      healthText += '…';
     }
-    scoreText += '…';
+    ctx.fillText(healthText, 40, y + 16);
+    ctx.restore();
   }
-  ctx.fillText(scoreText, 40, y + 16); // Un poco a la derecha y debajo del nombre
-  ctx.restore();
-}
 }
 
 function drawDeathOverlay() {
@@ -1487,19 +1534,7 @@ const extraOptions = [
   { name: () => darkMode ? "☀️ MODO DÍA: OFF" : "☀️ MODO DÍA: ON", action: () => { darkMode = !darkMode; } }
 ];
 let totalMenuOptions = menuOptions.length + extraOptions.length;
-
-
-document.addEventListener('keydown', function(e) {
-  if (!isSpectatorMode) return;
   
-  if (e.key === ' ') {
-    // Cambiar jugador seguido
-    switchSpectatorTarget();
-  } else if (e.key === 'Enter' && gameEndRanking) {
-    // Mostrar ranking final
-    // Ya se muestra automáticamente si gameEndRanking existe
-  }
-});
 
 canvas.addEventListener("touchstart", function (e) {
   if (gameMode !== null) return;
@@ -1811,11 +1846,12 @@ function resetOnlineMode(orbsFromServer, startTimeFromServer, specialItemsFromSe
   specialItems = specialItemsFromServer || [];
   player.x = worldWidth / 2;
   player.y = worldHeight / 2;
-  player.radius = 10;
+  player.radius = 10; // Núcleo siempre pequeño
   player.polarity = 1;
-  player.fieldRadius = 60;
-  player.health = 100;
-  player.maxHealth = 100;
+  player.fieldRadius = 60; // Campo inicial
+  player.health = 60; // VIDA INICIAL
+  player.maxHealth = 60; // VIDA MAX INICIAL
+  player.maxHealthEverReached = 60; // NUEVO
   player.kills = 0;
   player.velocity = { x: 0, y: 0 };
   player.hitTimer = 0;
@@ -1927,24 +1963,25 @@ socket.on("init", ({ id, players }) => {
 
   // Emite posición inmediatamente (esto ya lo tienes)
   if (isOnline && socket && playerId) {
-    socket.emit("update", {
-      x: player.x,
-      y: player.y,
-      name: player.name,
-      radius: player.radius,
-      polarity: player.polarity,
-      fieldRadius: player.fieldRadius,
-      health: player.health,
-      maxHealth: player.maxHealth,
-      dead: player.dead,
-      specialItem1: player.specialItem1,
-      specialItem2: player.specialItem2,
-      frozenUntil: player.frozenUntil,
-      shieldUntil: player.shieldUntil,
-      repulseVisualUntil: player.repulseVisualUntil,
-      hitTimer: player.hitTimer,
-      lastPolarityChange
-    });
+socket.emit("update", {
+  x: player.x,
+  y: player.y,
+  name: player.name,
+  radius: player.radius,
+  polarity: player.polarity,
+  fieldRadius: player.fieldRadius,
+  health: player.health,
+  maxHealth: player.maxHealth,
+  maxHealthEverReached: player.maxHealthEverReached, // AGREGAR ESTA LÍNEA
+  dead: player.dead,
+  specialItem1: player.specialItem1,
+  specialItem2: player.specialItem2,
+  frozenUntil: player.frozenUntil,
+  shieldUntil: player.shieldUntil,
+  repulseVisualUntil: player.repulseVisualUntil,
+  hitTimer: player.hitTimer,
+  lastPolarityChange
+});
   }
 });
 
@@ -2439,6 +2476,11 @@ if (e.key.toLowerCase() === 'e' && player.specialItem2) {
   activateSpecialItem(player, 'specialItem2');
   }
 });
+document.addEventListener('keydown', function(e) {
+  if (isSpectatorMode && e.code === "Space") {
+    switchSpectatorTarget();
+  }
+});
 
 let explosions = [];
 function drawMissiles(offsetX, offsetY) {
@@ -2524,8 +2566,8 @@ canvas.addEventListener('click', e => {
     const y = e.clientY - rect.top;
     
     // Botón volver al menú en ranking
-    if (x > canvas.width / 2 - 100 && x < canvas.width / 2 + 100 && 
-        y > canvas.height - 120 && y < canvas.height - 70) {
+    if (x > canvas.width / 2 - 120 && x < canvas.width / 2 + 120 && 
+        y > canvas.height - 80 && y < canvas.height - 30) {
       gameEndRanking = null;
       isSpectatorMode = false;
       spectatorTarget = null;
@@ -2801,53 +2843,85 @@ function switchSpectatorTarget() {
 }
 
 function drawGameEndRanking() {
-  if (!gameEndRanking) return;
+  if (!gameEndRanking || gameEndRanking.length === 0) return;
   
   ctx.save();
-  ctx.fillStyle = "rgba(0,0,0,0.85)";
+  ctx.fillStyle = "rgba(0,0,0,0.9)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   
   // Título
   ctx.fillStyle = "#FFD700";
-  ctx.font = "bold 42px Arial";
+  ctx.font = "bold 36px Arial";
   ctx.textAlign = "center";
-  ctx.fillText("🏆 RANKING FINAL 🏆", canvas.width / 2, 80);
+  ctx.fillText("🏆 RANKING FINAL 🏆", canvas.width / 2, 50);
   
-  // Ranking
-  const startY = 140;
-  const rowHeight = 45;
+  // Subtítulo con total de jugadores
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "18px Arial";
+  ctx.fillText(`Total: ${gameEndRanking.length} Jugadores`, canvas.width / 2, 80);
   
-  gameEndRanking.forEach((playerData, index) => {
-    const y = startY + index * rowHeight;
-    const position = index + 1;
+  // Área scrolleable para el ranking
+  const startY = 120;
+  const rowHeight = 32;
+  const maxRows = Math.min(gameEndRanking.length, 16); // Máximo 16 filas visibles
+  
+  // Fondo del área de ranking
+  ctx.fillStyle = "rgba(20,20,20,0.8)";
+  ctx.fillRect(30, startY - 10, canvas.width - 60, maxRows * rowHeight + 20);
+  
+  // Mostrar jugadores
+  for (let i = 0; i < maxRows; i++) {
+    if (i >= gameEndRanking.length) break;
+    
+    const playerData = gameEndRanking[i];
+    const y = startY + i * rowHeight + 20;
+    const position = playerData.position || (i + 1);
     
     // Color según posición
     let color = "#ffffff";
     if (position === 1) color = "#FFD700"; // Oro
     else if (position === 2) color = "#C0C0C0"; // Plata
     else if (position === 3) color = "#CD7F32"; // Bronce
+    else if (position <= 5) color = "#90EE90"; // Verde claro top 5
     
     ctx.fillStyle = color;
-    ctx.font = "bold 28px Arial";
+    ctx.font = position <= 3 ? "bold 20px Arial" : "16px Arial";
     ctx.textAlign = "left";
     
     // Posición y nombre
-    ctx.fillText(`${position}. ${playerData.name}`, 150, y);
+    let displayName = playerData.name || "Jugador";
+    if (displayName.length > 15) {
+      displayName = displayName.substring(0, 12) + "...";
+    }
+    ctx.fillText(`${position}. ${displayName}`, 50, y);
     
-    // Stats
-    ctx.font = "24px Arial";
+    // Stats centradas
+    ctx.font = "14px Arial";
     ctx.fillStyle = "#cccccc";
+    ctx.textAlign = "center";
+    ctx.fillText(`Kills: ${playerData.kills || 0}`, canvas.width / 2, y);
+    
     ctx.textAlign = "right";
-    ctx.fillText(`Kills: ${playerData.kills}`, canvas.width - 150, y);
-  });
+    ctx.fillText(`Vida máx: ${Math.ceil(playerData.maxHealthEverReached || 60)}`, canvas.width - 50, y);
+  }
   
-  // Botón volver al menú
+  // Indicador si hay más jugadores
+  if (gameEndRanking.length > maxRows) {
+    ctx.fillStyle = "#888888";
+    ctx.font = "14px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(`... y ${gameEndRanking.length - maxRows} más`, canvas.width / 2, startY + maxRows * rowHeight + 40);
+  }
+  
+  // Botón volver al menú más grande
+  const buttonY = canvas.height - 80;
   ctx.fillStyle = "#cc3333";
-  ctx.fillRect(canvas.width / 2 - 100, canvas.height - 120, 200, 50);
+  ctx.fillRect(canvas.width / 2 - 120, buttonY, 240, 50);
+  
   ctx.fillStyle = "#fff";
-  ctx.font = "20px Arial";
+  ctx.font = "bold 20px Arial";
   ctx.textAlign = "center";
-  ctx.fillText("Volver al menú", canvas.width / 2, canvas.height - 88);
+  ctx.fillText("Volver al menú", canvas.width / 2, buttonY + 32);
   
   ctx.restore();
 }
@@ -2884,6 +2958,47 @@ function drawSpectatorUI() {
   ctx.fillText("ENTER: Ranking (si terminó)", 15, canvas.height - 15);
   
   ctx.restore();
+}
+
+function switchSpectatorTargetMobile() {
+  if (!isSpectatorMode) return;
+  switchSpectatorTarget(); // Usa la función existente
+}
+
+function showRankingMobile() {
+  if (!isSpectatorMode || !gameEndRanking) return;
+}
+
+function handleMobilePButton(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  
+  if (isSpectatorMode) {
+    switchSpectatorTargetMobile();
+  } else {
+    changePolarity();
+  }
+}
+
+function handleMobileQButton(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (isSpectatorMode) {
+    // Puedes usar esto para cambiar de espectador si quieres
+    switchSpectatorTargetMobile();
+  } else {
+    useSpecial('specialItem1');
+  }
+}
+
+function handleMobileEButton(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (isSpectatorMode) {
+    showRankingMobile();
+  } else {
+    useSpecial('specialItem2');
+  }
 }
 
 function mainLoop(time = 0) {
@@ -2929,24 +3044,26 @@ function mainLoop(time = 0) {
     ctx.restore();
     
     if (isOnline && socket && playerId) {
-      if (socket) socket.emit("update", {
-        x: player.x,
-        y: player.y,
-        name: player.name,
-        radius: player.radius,
-        polarity: player.polarity,
-        fieldRadius: player.fieldRadius,
-        health: player.health,
-        maxHealth: player.maxHealth,
-        dead: player.dead,
-        specialItem1: player.specialItem1,
-        specialItem2: player.specialItem2,
-        frozenUntil: player.frozenUntil,
-        shieldUntil: player.shieldUntil,
-        repulseVisualUntil: player.repulseVisualUntil,
-        hitTimer: player.hitTimer,
-        lastPolarityChange
-      });
+      if (socket) 
+ socket.emit("update", {
+  x: player.x,
+  y: player.y,
+  name: player.name,
+  radius: player.radius,
+  polarity: player.polarity,
+  fieldRadius: player.fieldRadius,
+  health: player.health,
+  maxHealth: player.maxHealth,
+  maxHealthEverReached: player.maxHealthEverReached, // AGREGAR ESTA LÍNEA
+  dead: player.dead,
+  specialItem1: player.specialItem1,
+  specialItem2: player.specialItem2,
+  frozenUntil: player.frozenUntil,
+  shieldUntil: player.shieldUntil,
+  repulseVisualUntil: player.repulseVisualUntil,
+  hitTimer: player.hitTimer,
+  lastPolarityChange
+});
     }
   } else if (gameMode === "bots") {
     gameLoop(time);
@@ -2962,23 +3079,26 @@ function mainLoop(time = 0) {
     }
     
     if (isOnline && socket && playerId && !isSpectatorMode) {
-      if (socket) socket.emit("update", {
-        x: player.x,
-        y: player.y,
-        name: player.name,
-        radius: player.radius,
-        polarity: player.polarity,
-        fieldRadius: player.fieldRadius,
-        health: player.health,
-        maxHealth: player.maxHealth,
-        dead: player.dead,
-        specialItem1: player.specialItem1,
-        specialItem2: player.specialItem2,
-        frozenUntil: player.frozenUntil,
-        shieldUntil: player.shieldUntil,
-        repulseVisualUntil: player.repulseVisualUntil,
-        hitTimer: player.hitTimer
-      });
+      if (socket) 
+socket.emit("update", {
+  x: player.x,
+  y: player.y,
+  name: player.name,
+  radius: player.radius,
+  polarity: player.polarity,
+  fieldRadius: player.fieldRadius,
+  health: player.health,
+  maxHealth: player.maxHealth,
+  maxHealthEverReached: player.maxHealthEverReached, // AGREGAR ESTA LÍNEA
+  dead: player.dead,
+  specialItem1: player.specialItem1,
+  specialItem2: player.specialItem2,
+  frozenUntil: player.frozenUntil,
+  shieldUntil: player.shieldUntil,
+  repulseVisualUntil: player.repulseVisualUntil,
+  hitTimer: player.hitTimer,
+  lastPolarityChange
+});
     }
   }
   requestAnimationFrame(mainLoop);
